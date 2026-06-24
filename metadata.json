@@ -1,0 +1,6 @@
+{
+  "name": "Eternity",
+  "description": "An elegant, all-in-one personal academic workspace and productivity dashboard.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

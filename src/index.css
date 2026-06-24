@@ -1,0 +1,82 @@
+@import url('https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@0,400..800;1,400..800&family=Lora:ital,wght@0,400..700;1,400..700&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Lora", Georgia, serif;
+  --font-serif: "EB Garamond", serif;
+  --font-display: "EB Garamond", serif;
+  --font-mono: "Courier New", Courier, monospace;
+}
+
+:root {
+  --bg: #f4efe2; /* soft warm parchment */
+  --surface: #fbf9f4; /* creamy eggshell/linen */
+  --surface-hover: #f5eedc; /* soft warm oatmeal highlight */
+  --surface-active: #ecdcb9; /* cozy dry hay / sandy beige */
+  --border: #dfd6c0; /* warm pressed paper board boundary */
+  --border-strong: #c4b598; /* rustic timber / vintage thread */
+  --text: #2f251d; /* rich roasted acorn / warm oak wood */
+  --muted: #85725f; /* dried moss / acorn gray-brown */
+  --muted-dark: #645140; /* vintage bookbinding leather brown */
+  --accent: #556f44; /* earthy forest sage / organic spruce leaf */
+  --accent-dim: rgba(85, 111, 68, 0.08);
+  --accent-border: rgba(85, 111, 68, 0.25);
+}
+
+html.dark {
+  --bg: #1a1511; /* midnight cabin wood shadow */
+  --surface: #221c17; /* deep dark walnut */
+  --surface-hover: #2b231d; /* roasted chestnut smoke */
+  --surface-active: #362c24; /* charred pine bark */
+  --border: #3d3229; /* ancient cedar wood shadow */
+  --border-strong: #4f4135; /* dry peat soil */
+  --text: #efeae2; /* warm light fleece / ivory candle glow */
+  --muted: #8b7f73; /* cozy wool / dry willow bark */
+  --muted-dark: #bcaea0; /* weathered fence post */
+  --accent: #9eb592; /* soft early moss / spring leaf sprout */
+  --accent-dim: rgba(158, 181, 146, 0.09);
+  --accent-border: rgba(158, 181, 146, 0.25);
+}
+
+/* Custom transitions and styles */
+* {
+  transition-property: background-color, border-color, text-decoration-color, fill, stroke;
+  transition-duration: 200ms;
+  transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+body {
+  font-family: var(--font-sans);
+  background-color: var(--bg);
+  color: var(--text);
+  min-height: 100vh;
+  overflow-x: hidden;
+}
+
+/* Smooth hidden custom scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: 99px;
+}
+
+/* Modal and utility styles */
+.serif {
+  font-family: var(--font-serif);
+}
+
+.display {
+  font-family: var(--font-display);
+}
+
+.mono {
+  font-family: var(--font-mono);
+}
