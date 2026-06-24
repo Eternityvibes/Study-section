@@ -723,7 +723,10 @@ export default function ExploreTab({
 
 -- Enable RLS and make public for device-to-device sync
 ALTER TABLE tracker_sync ENABLE ROW LEVEL SECURITY;
-CREATE POLICY "Allow public access" ON tracker_sync FOR ALL USING (true) WITH CHECK (true);`}
+CREATE POLICY "Allow public access" ON tracker_sync FOR ALL USING (true) WITH CHECK (true);
+
+-- Enable Realtime broadcast for device synchronization
+ALTER PUBLICATION supabase_realtime ADD TABLE tracker_sync;`}
                       </pre>
                     </li>
                   </ol>

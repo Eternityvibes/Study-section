@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { 
   Flame, 
   Layers, 
@@ -39,7 +39,7 @@ import HealthTab from './components/HealthTab';
 import FinanceTab from './components/FinanceTab';
 import CalendarTab from './components/CalendarTab';
 import ExploreTab from './components/ExploreTab';
-import { getSupabase, subscribeToSyncChanges, uploadStateToSupabase } from './lib/supabase';
+import { getSupabase, subscribeToSyncChanges, uploadStateToSupabase, downloadStateFromSupabase } from './lib/supabase';
 
 export default function App() {
   // State Initialization
@@ -62,30 +62,91 @@ export default function App() {
     return localStorage.getItem('eternity_supabase_sync_code');
   });
 
+  // Track current real-time sync connectivity state
+  const [syncStatus, setSyncStatus] = useState<'idle' | 'syncing' | 'connected' | 'error' | 'disconnected'>(() => {
+    return localStorage.getItem('eternity_supabase_sync_code') ? 'syncing' : 'disconnected';
+  });
+  const [syncError, setSyncError] = useState<string | null>(null);
+
+  // Track the last state JSON string we have pushed or pulled to avoid infinite loops
+  const lastSyncedStateRef = useRef<string>('');
+
+  // Fetch initial state once when sync code is loaded or configured
+  useEffect(() => {
+    const supabase = getSupabase();
+    if (!supabase || !supabaseSyncCode) {
+      setSyncStatus('disconnected');
+      return;
+    }
+
+    async function loadInitialSync() {
+      setSyncStatus('syncing');
+      try {
+        const remoteState = await downloadStateFromSupabase(supabase, supabaseSyncCode);
+        if (remoteState) {
+          const remoteStr = JSON.stringify(remoteState);
+          lastSyncedStateRef.current = remoteStr;
+          setState(remoteState);
+          setSyncStatus('connected');
+          setSyncError(null);
+        } else {
+          // If there is no remote state yet, we can push our local state to initialize it!
+          await uploadStateToSupabase(supabase, supabaseSyncCode, state);
+          lastSyncedStateRef.current = JSON.stringify(state);
+          setSyncStatus('connected');
+          setSyncError(null);
+        }
+      } catch (err: any) {
+        console.error('Failed to pull initial Supabase state:', err);
+        setSyncStatus('error');
+        setSyncError(err.message || 'Failed to download initial state.');
+      }
+    }
+
+    loadInitialSync();
+  }, [supabaseSyncCode]);
+
   // Listen for external real-time updates from other devices via Supabase
   useEffect(() => {
     const supabase = getSupabase();
-    if (!supabase || !supabaseSyncCode) return;
+    if (!supabase || !supabaseSyncCode) {
+      setSyncStatus('disconnected');
+      return;
+    }
 
-    const subscription = subscribeToSyncChanges(supabase, supabaseSyncCode, (remoteState) => {
-      if (remoteState) {
-        setState(current => {
-          const localStr = JSON.stringify(current);
+    const subscription = subscribeToSyncChanges(
+      supabase, 
+      supabaseSyncCode, 
+      (remoteState) => {
+        if (remoteState) {
           const remoteStr = JSON.stringify(remoteState);
-          if (localStr !== remoteStr) {
-            return remoteState;
+          if (lastSyncedStateRef.current !== remoteStr) {
+            lastSyncedStateRef.current = remoteStr;
+            setState(remoteState);
+            setSyncStatus('connected');
+            setSyncError(null);
           }
-          return current;
-        });
+        }
+      },
+      (status, err) => {
+        if (status === 'SUBSCRIBED') {
+          setSyncStatus('connected');
+          setSyncError(null);
+        } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+          setSyncStatus('error');
+          setSyncError(err?.message || `Realtime subscription status: ${status}`);
+        } else if (status === 'CLOSED') {
+          setSyncStatus('disconnected');
+        }
       }
-    });
+    );
 
     return () => {
       supabase.removeChannel(subscription);
     };
   }, [supabaseSyncCode]);
 
-  // Debounced Auto-upload to Supabase on state change
+  // Debounced Auto-upload to Supabase on local state change
   useEffect(() => {
     const supabase = getSupabase();
     if (!supabase || !supabaseSyncCode) return;
@@ -93,11 +154,22 @@ export default function App() {
     const autoUpload = localStorage.getItem('eternity_supabase_auto_upload') !== 'false';
     if (!autoUpload) return;
 
+    const stateStr = JSON.stringify(state);
+    // Skip uploading if this state is identical to what we just synced
+    if (stateStr === lastSyncedStateRef.current) return;
+
+    setSyncStatus('syncing');
+
     const timer = setTimeout(async () => {
       try {
         await uploadStateToSupabase(supabase, supabaseSyncCode, state);
-      } catch (err) {
+        lastSyncedStateRef.current = stateStr;
+        setSyncStatus('connected');
+        setSyncError(null);
+      } catch (err: any) {
         console.error('Auto-sync to Supabase failed:', err);
+        setSyncStatus('error');
+        setSyncError(err.message || 'Auto-upload failed');
       }
     }, 2500); // 2.5 seconds debounce to prevent high rate usage
 
@@ -1263,6 +1335,9 @@ export default function App() {
         isDark={state.dark}
         setIsDark={(val) => setState(prev => ({ ...prev, dark: val }))}
         todoCount={state.todos.filter(t => !t.done).length}
+        syncStatus={syncStatus}
+        syncError={syncError}
+        supabaseSyncCode={supabaseSyncCode}
       />
 
       {/* Main Workspace Feed content */}

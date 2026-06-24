@@ -13,7 +13,7 @@ interface Preset {
 }
 
 const PRESETS: Preset[] = [
-  { name: "Wood Cabin Lo-Fi Beats", vid: "jfKfPfyJRdk", emoji: "🍂" },
+  { name: "Lofi Study Session", vid: "5qap5aO4i9A", emoji: "📚" },
   { name: "Rain-washed Café Jazz", vid: "neV3EPgvZ3g", emoji: "☕" },
   { name: "Vintage Library Classics", vid: "4Tr0otuiQuU", emoji: "🎻" },
   { name: "Mossy Greenhouse Rain", vid: "mPZkdNFkNps", emoji: "🌧️" },
@@ -124,21 +124,35 @@ export default function MusicPlayer() {
       {/* Hidden/Mini Embedded Player Box */}
       {currentVid && (
         <div className="mt-4 bg-black rounded-lg overflow-hidden relative shadow-md">
-          <div className="absolute top-0 left-0 right-0 px-3 py-1 bg-black/60 backdrop-blur-xs text-[10px] text-white font-mono flex items-center justify-between z-10">
-            <span className="truncate">🎵 Now Playing: {currentName}</span>
-            <span className="text-emerald-400 font-bold flex items-center gap-1">
-              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span> Streaming Loop
-            </span>
+          <div className="absolute top-0 left-0 right-0 px-3 py-1.5 bg-black/80 backdrop-blur-xs text-[10px] text-white font-mono flex items-center justify-between z-10 border-b border-white/10">
+            <span className="truncate mr-2 font-medium">🎵 Now Playing: {currentName}</span>
+            <div className="flex items-center gap-2 shrink-0">
+              <a 
+                href={`https://www.youtube.com/watch?v=${currentVid}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-[9px] text-[var(--accent)] hover:underline font-bold bg-white/10 hover:bg-white/20 px-2 py-0.5 rounded transition-all flex items-center gap-1"
+              >
+                Open in YouTube ↗
+              </a>
+              <span className="text-emerald-400 font-bold flex items-center gap-1">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span> Streaming Loop
+              </span>
+            </div>
           </div>
-          <iframe
-            width="100%"
-            height="80"
-            src={`https://www.youtube.com/embed/${currentVid}?autoplay=1&loop=1&playlist=${currentVid}&controls=0`}
-            title="Eternity Concentration Radio Player"
-            allow="autoplay; encrypted-media"
-            referrerPolicy="no-referrer"
-            className="border-none"
-          />
+          <div className="pt-8">
+            <iframe
+              width="100%"
+              height="200"
+              src={`https://www.youtube.com/embed/${currentVid}?autoplay=1&mute=1&loop=1&playlist=${currentVid}&controls=1&modestbranding=1&rel=0`}
+              title="Eternity Concentration Radio Player"
+              allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+              className="border-none w-full"
+            />
+          </div>
+          <div className="p-2.5 bg-zinc-950 text-[10px] text-zinc-400 font-medium text-center border-t border-zinc-800 leading-relaxed">
+            <span>💡 <strong>Tip:</strong> The browser loads the video muted by default to bypass embed restrictions. Simply hover over the video and click the volume icon to unmute! If embedding is blocked, click "Open in YouTube" to stream.</span>
+          </div>
         </div>
       )}
     </div>

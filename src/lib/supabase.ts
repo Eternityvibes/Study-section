@@ -89,32 +89,61 @@ export async function downloadStateFromSupabase(
     throw new Error(`Supabase Query Error: ${error.message}`);
   }
 
-  return data ? data.state : null;
+  if (data && data.state) {
+    let parsedState = data.state;
+    if (typeof parsedState === 'string') {
+      try {
+        parsedState = JSON.parse(parsedState);
+      } catch (e) {
+        console.error('Failed to parse downloaded state JSON:', e);
+      }
+    }
+    return parsedState;
+  }
+
+  return null;
 }
 
 /**
- * Subscribe to real-time changes for a sync code
+ * Subscribe to real-time changes for a sync code with connection status monitoring
  */
 export function subscribeToSyncChanges(
   client: SupabaseClient,
   syncCode: string,
-  onUpdate: (newState: any) => void
+  onUpdate: (newState: any) => void,
+  onStatusChange?: (status: string, err?: any) => void
 ) {
-  return client
+  const channel = client
     .channel(`realtime_tracker_sync_${syncCode}`)
     .on(
       'postgres_changes',
       {
-        event: 'UPDATE',
+        event: '*',
         schema: 'public',
         table: 'tracker_sync',
         filter: `sync_code=eq.${syncCode}`,
       },
       (payload: any) => {
         if (payload.new && payload.new.state) {
-          onUpdate(payload.new.state);
+          let parsedState = payload.new.state;
+          if (typeof parsedState === 'string') {
+            try {
+              parsedState = JSON.parse(parsedState);
+            } catch (e) {
+              console.error('Failed to parse realtime state JSON:', e);
+              return;
+            }
+          }
+          onUpdate(parsedState);
         }
       }
-    )
-    .subscribe();
+    );
+
+  channel.subscribe((status, err) => {
+    if (onStatusChange) {
+      onStatusChange(status, err);
+    }
+  });
+
+  return channel;
 }
