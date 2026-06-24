@@ -35,7 +35,7 @@ interface SidebarProps {
   todoCount: number;
   syncStatus?: 'idle' | 'syncing' | 'connected' | 'error' | 'disconnected';
   syncError?: string | null;
-  supabaseSyncCode?: string | null;
+  syncUserEmail?: string | null;
 }
 
 export default function Sidebar({
@@ -47,7 +47,7 @@ export default function Sidebar({
   todoCount,
   syncStatus = 'disconnected',
   syncError = null,
-  supabaseSyncCode = null
+  syncUserEmail = null
 }: SidebarProps) {
   const [mobileOpen, setMobileOpen] = useState(false);
 
@@ -187,37 +187,37 @@ export default function Sidebar({
           ))}
         </nav>
 
-        {/* Real-time Sync Status indicator */}
+        {/* Google Drive Sync Status indicator */}
         <div className="px-4 py-2 border-t border-[var(--border)] bg-[var(--surface-hover)]/30 flex items-center justify-between text-[10px] select-none">
           <div className="flex items-center gap-1.5 min-w-0">
             {syncStatus === 'connected' && (
               <>
                 <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse shrink-0"></span>
-                <span className="text-[var(--text)] font-semibold truncate" title="Connected to Supabase and syncing in real-time">Cloud Synced</span>
+                <span className="text-[var(--text)] font-semibold truncate" title="Connected to Google Drive and auto-saving in background">Drive Synced</span>
               </>
             )}
             {syncStatus === 'syncing' && (
               <>
                 <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse shrink-0"></span>
-                <span className="text-[var(--text)] font-semibold truncate animate-pulse" title="Uploading or downloading state updates">Syncing...</span>
+                <span className="text-[var(--text)] font-semibold truncate animate-pulse" title="Saving or loading data from Google Drive">Syncing...</span>
               </>
             )}
             {syncStatus === 'error' && (
               <>
                 <span className="w-1.5 h-1.5 rounded-full bg-red-500 shrink-0"></span>
-                <span className="text-red-500 font-bold truncate animate-pulse" title={syncError || 'Sync failed. Click Academics -> Supabase Sync Cabin to view details.'}>Sync Error</span>
+                <span className="text-red-500 font-bold truncate animate-pulse" title={syncError || 'Google Drive sync failed. Click Academics -> Google Drive Sync Cabin to view details.'}>Sync Error</span>
               </>
             )}
             {syncStatus === 'disconnected' && (
               <>
                 <span className="w-1.5 h-1.5 rounded-full bg-zinc-400 shrink-0"></span>
-                <span className="text-[var(--muted)] font-medium truncate" title="Local storage only. Click Academics -> Supabase Sync Cabin to set up.">Local Only</span>
+                <span className="text-[var(--muted)] font-medium truncate" title="Local storage only. Click Academics -> Google Drive Sync Cabin to set up.">Local Only</span>
               </>
             )}
           </div>
-          {supabaseSyncCode && (
-            <span className="font-mono text-[9px] text-[var(--muted)] bg-[var(--surface)] px-1 py-0.5 rounded border border-[var(--border)] uppercase truncate max-w-[80px]" title={`Active Sync Code: ${supabaseSyncCode}`}>
-              {supabaseSyncCode.replace('SYNC-', '')}
+          {syncUserEmail && (
+            <span className="font-mono text-[9px] text-[var(--muted)] bg-[var(--surface)] px-1 py-0.5 rounded border border-[var(--border)] truncate max-w-[80px]" title={syncUserEmail}>
+              {syncUserEmail}
             </span>
           )}
         </div>

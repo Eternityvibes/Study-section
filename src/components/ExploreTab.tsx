@@ -34,12 +34,6 @@ import {
   saveBackupToDrive, 
   downloadBackupFromDrive 
 } from '../lib/drive';
-import { 
-  getSupabase, 
-  generateSyncCode, 
-  uploadStateToSupabase, 
-  downloadStateFromSupabase 
-} from '../lib/supabase';
 import { User } from 'firebase/auth';
 
 interface ExploreTabProps {
@@ -47,8 +41,18 @@ interface ExploreTabProps {
   onUpdateCourses?: (courses: Course[]) => void;
   onUpdateTimetable?: (timetable: TimetableEntry[]) => void;
   onRestoreState?: (state: AppState) => void;
-  supabaseSyncCode: string | null;
-  onUpdateSyncCode: (code: string | null) => void;
+  googleUser: User | null;
+  googleToken: string | null;
+  syncStatus: 'idle' | 'syncing' | 'connected' | 'error' | 'disconnected';
+  syncError: string | null;
+  autoUpload: boolean;
+  folderUrl: string;
+  onGoogleSignIn: () => Promise<void>;
+  onSignOut: () => Promise<void>;
+  onBackup: () => Promise<void>;
+  onRestore: () => Promise<void>;
+  onToggleAutoUpload: (checked: boolean) => void;
+  onUpdateFolderUrl: (url: string) => void;
 }
 
 const GRADE_POINTS: Record<string, number> = {
@@ -71,248 +75,26 @@ export default function ExploreTab({
   onUpdateCourses, 
   onUpdateTimetable, 
   onRestoreState,
-  supabaseSyncCode,
-  onUpdateSyncCode
+  googleUser,
+  googleToken,
+  syncStatus,
+  syncError,
+  autoUpload,
+  folderUrl,
+  onGoogleSignIn,
+  onSignOut,
+  onBackup,
+  onRestore,
+  onToggleAutoUpload,
+  onUpdateFolderUrl
 }: ExploreTabProps) {
   const { xp, streak, sessions, todos, learned, water, transactions, profile, courses, timetable = [] } = appState;
 
-  // Google Drive state
-  const [googleUser, setGoogleUser] = useState<User | null>(null);
-  const [googleToken, setGoogleToken] = useState<string | null>(null);
-  const [folderUrl, setFolderUrl] = useState<string>(() => {
-    return localStorage.getItem('eternity_gdrive_folder_url') || '';
-  });
+  // Google Drive state (legacy, now driven by props from App)
   const [isBackingUp, setIsBackingUp] = useState(false);
   const [isRestoring, setIsRestoring] = useState(false);
   const [backupSuccess, setBackupSuccess] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
-  const [isLoadingAuth, setIsLoadingAuth] = useState(true);
-
-  // Initialize Auth listener on load
-  useEffect(() => {
-    const unsubscribe = initAuth(
-      (user, token) => {
-        setGoogleUser(user);
-        setGoogleToken(token);
-        setIsLoadingAuth(false);
-      },
-      () => {
-        setGoogleUser(null);
-        setGoogleToken(null);
-        setIsLoadingAuth(false);
-      }
-    );
-    return () => {
-      if (typeof unsubscribe === 'function') {
-        unsubscribe();
-      }
-    };
-  }, []);
-
-  // Sync folder url to localStorage
-  useEffect(() => {
-    localStorage.setItem('eternity_gdrive_folder_url', folderUrl);
-  }, [folderUrl]);
-
-  const handleGoogleSignIn = async () => {
-    setErrorMsg(null);
-    setBackupSuccess(null);
-    try {
-      const res = await googleSignIn();
-      if (res) {
-        setGoogleUser(res.user);
-        setGoogleToken(res.accessToken);
-      }
-    } catch (err: any) {
-      console.error(err);
-      setErrorMsg(err.message || 'Authentication with Google failed.');
-    }
-  };
-
-  const handleSignOut = async () => {
-    setErrorMsg(null);
-    setBackupSuccess(null);
-    try {
-      await logout();
-      setGoogleUser(null);
-      setGoogleToken(null);
-    } catch (err: any) {
-      console.error(err);
-      setErrorMsg(err.message || 'Logout failed.');
-    }
-  };
-
-  const handleBackup = async () => {
-    if (!googleToken) {
-      setErrorMsg('Please sign in with Google first.');
-      return;
-    }
-    
-    setIsBackingUp(true);
-    setErrorMsg(null);
-    setBackupSuccess(null);
-    
-    try {
-      const folderId = extractFolderId(folderUrl);
-      if (folderUrl && !folderId) {
-        throw new Error('Invalid Google Drive folder link. Please paste a valid folder URL or leave empty.');
-      }
-      
-      const res = await saveBackupToDrive(googleToken, folderId, appState);
-      const timestamp = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-      setBackupSuccess(`Backed up tracker state to Drive at ${timestamp}! File: 'university_life_tracker_backup.json'`);
-    } catch (err: any) {
-      console.error(err);
-      setErrorMsg(err.message || 'Failed to backup your data to Google Drive.');
-    } finally {
-      setIsBackingUp(false);
-    }
-  };
-
-  const handleRestore = async () => {
-    if (!googleToken) {
-      setErrorMsg('Please sign in with Google first.');
-      return;
-    }
-    
-    const confirmRestore = window.confirm(
-      "WARNING: Restoring your data will completely overwrite your current local university life tracker state! Are you absolutely sure you want to proceed?"
-    );
-    if (!confirmRestore) return;
-    
-    setIsRestoring(true);
-    setErrorMsg(null);
-    setBackupSuccess(null);
-    
-    try {
-      const folderId = extractFolderId(folderUrl);
-      if (folderUrl && !folderId) {
-        throw new Error('Invalid Google Drive folder link. Please paste a valid folder URL or leave empty.');
-      }
-      
-      const restoredState = await downloadBackupFromDrive(googleToken, folderId);
-      if (restoredState && onRestoreState) {
-        onRestoreState(restoredState);
-        setBackupSuccess(`Data successfully imported and restored from your Google Drive!`);
-      } else {
-        throw new Error('Restored data is corrupt or invalid.');
-      }
-    } catch (err: any) {
-      console.error(err);
-      setErrorMsg(err.message || "Failed to restore. Make sure 'university_life_tracker_backup.json' exists in that folder/root.");
-    } finally {
-      setIsRestoring(false);
-    }
-  };
-
-  // ─── Supabase Real-time Sync state & handlers ───
-  const [supabaseError, setSupabaseError] = useState<string | null>(null);
-  const [supabaseSuccess, setSupabaseSuccess] = useState<string | null>(null);
-  const [syncCodeInput, setSyncCodeInput] = useState('');
-  const [isSupabaseLoading, setIsSupabaseLoading] = useState(false);
-  const [autoUpload, setAutoUpload] = useState(() => {
-    return localStorage.getItem('eternity_supabase_auto_upload') !== 'false';
-  });
-
-  const supabase = getSupabase();
-
-  const handleGenerateCode = async () => {
-    if (!supabase) return;
-    setIsSupabaseLoading(true);
-    setSupabaseError(null);
-    setSupabaseSuccess(null);
-    try {
-      const code = generateSyncCode();
-      // Upload current local state under this new code
-      await uploadStateToSupabase(supabase, code, appState);
-      onUpdateSyncCode(code);
-      setSupabaseSuccess(`Generated new sync code: ${code}. Current state has been uploaded to Supabase!`);
-    } catch (err: any) {
-      console.error(err);
-      setSupabaseError(err.message || 'Failed to generate sync code.');
-    } finally {
-      setIsSupabaseLoading(false);
-    }
-  };
-
-  const handleConnectCode = async () => {
-    if (!supabase) return;
-    const trimmed = syncCodeInput.trim().toUpperCase();
-    if (!trimmed) {
-      setSupabaseError('Please enter a valid sync code.');
-      return;
-    }
-    setIsSupabaseLoading(true);
-    setSupabaseError(null);
-    setSupabaseSuccess(null);
-    try {
-      const remoteState = await downloadStateFromSupabase(supabase, trimmed);
-      if (!remoteState) {
-        throw new Error(`Sync code "${trimmed}" not found in Supabase. Please double check the code.`);
-      }
-      if (onRestoreState) {
-        onRestoreState(remoteState);
-      }
-      onUpdateSyncCode(trimmed);
-      setSupabaseSuccess(`Successfully connected to ${trimmed}! Your tracker is now synchronized in real-time.`);
-    } catch (err: any) {
-      console.error(err);
-      setSupabaseError(err.message || 'Failed to connect to sync code.');
-    } finally {
-      setIsSupabaseLoading(false);
-    }
-  };
-
-  const handleForcePush = async () => {
-    if (!supabase || !supabaseSyncCode) return;
-    setIsSupabaseLoading(true);
-    setSupabaseError(null);
-    setSupabaseSuccess(null);
-    try {
-      await uploadStateToSupabase(supabase, supabaseSyncCode, appState);
-      const timestamp = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-      setSupabaseSuccess(`Manually pushed your local state to Supabase at ${timestamp}!`);
-    } catch (err: any) {
-      console.error(err);
-      setSupabaseError(err.message || 'Failed to manual push.');
-    } finally {
-      setIsSupabaseLoading(false);
-    }
-  };
-
-  const handleForcePull = async () => {
-    if (!supabase || !supabaseSyncCode) return;
-    setIsSupabaseLoading(true);
-    setSupabaseError(null);
-    setSupabaseSuccess(null);
-    try {
-      const remoteState = await downloadStateFromSupabase(supabase, supabaseSyncCode);
-      if (!remoteState) {
-        throw new Error('No state found in Supabase for this sync code.');
-      }
-      if (onRestoreState) {
-        onRestoreState(remoteState);
-      }
-      setSupabaseSuccess('Manually pulled latest state from Supabase!');
-    } catch (err: any) {
-      console.error(err);
-      setSupabaseError(err.message || 'Failed to manual pull.');
-    } finally {
-      setIsSupabaseLoading(false);
-    }
-  };
-
-  const handleDisconnectSync = () => {
-    onUpdateSyncCode(null);
-    setSyncCodeInput('');
-    setSupabaseSuccess('Disconnected from Supabase sync.');
-    setSupabaseError(null);
-  };
-
-  const handleToggleAutoUpload = (checked: boolean) => {
-    setAutoUpload(checked);
-    localStorage.setItem('eternity_supabase_auto_upload', checked ? 'true' : 'false');
-  };
 
   // Local state for adding class slots
   const [showAddForm, setShowAddForm] = useState(false);
@@ -545,40 +327,36 @@ export default function ExploreTab({
             )}
           </div>
 
-          {/* Google Drive Cloud Backup Cabin */}
+          {/* Google Drive Cloud Sync Cabin */}
           <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5 space-y-4 shadow-xs">
             <div className="flex items-center justify-between border-b border-[var(--border)] pb-2">
               <h3 className="serif text-base font-semibold text-[var(--text)] flex items-center gap-2">
                 <Cloud className="w-4.5 h-4.5 text-[var(--accent)]" />
-                <span>Google Drive Backup Cabin</span>
+                <span>Google Drive Sync Cabin</span>
               </h3>
               <span className="text-[9px] font-bold text-[var(--accent)] uppercase bg-[var(--accent-dim)] px-2.5 py-0.5 rounded-full">
                 Workspace cloud
               </span>
             </div>
 
-            {isLoadingAuth ? (
-              <div className="flex items-center justify-center py-6 text-xs text-[var(--muted)] gap-2">
-                <RefreshCw className="w-4 h-4 animate-spin" />
-                <span>Verifying cloud authentication cabin...</span>
-              </div>
-            ) : !googleUser ? (
+            {!googleUser ? (
               <div className="space-y-3.5">
                 <p className="text-xs text-[var(--muted-dark)] leading-relaxed">
-                  Safeguard your entire university journey! Archive your complete tracker state (courses, timetables, milestones, water metrics, budget ledgers, and logs) directly to your personal Google Drive.
+                  Safeguard your entire university journey! Automatically sync and back up your complete tracker state (courses, timetables, milestones, water metrics, budget ledgers, and logs) directly to your personal Google Drive.
                 </p>
 
                 <div className="bg-[var(--surface-hover)] border border-[var(--border)] rounded-xl p-3 flex gap-2">
-                  <Info className="w-4 h-4 text-[var(--accent)] shrink-0 mt-0.5" />
+                  <Info className="w-4.5 h-4.5 text-[var(--accent)] shrink-0 mt-0.5" />
                   <p className="text-[10px] text-[var(--muted)] leading-normal">
-                    This integration uses secure Google Auth. Your data is saved as a single JSON file named <strong>university_life_tracker_backup.json</strong> in your chosen location.
+                    This integration uses secure Google Auth. Your data is saved as a single JSON file named <strong>university_life_tracker_backup.json</strong> inside your chosen folder.
                   </p>
                 </div>
 
                 <button
                   type="button"
-                  onClick={handleGoogleSignIn}
-                  className="w-full flex items-center justify-center gap-3 bg-[var(--surface)] hover:bg-[var(--surface-hover)] text-[var(--text)] border border-[var(--border-strong)] transition-all font-semibold rounded-xl py-2 px-4 shadow-xs cursor-pointer select-none"
+                  onClick={onGoogleSignIn}
+                  disabled={syncStatus === 'syncing'}
+                  className="w-full flex items-center justify-center gap-3 bg-[var(--surface)] hover:bg-[var(--surface-hover)] text-[var(--text)] border border-[var(--border-strong)] transition-all font-semibold rounded-xl py-2 px-4 shadow-xs cursor-pointer select-none disabled:opacity-50"
                 >
                   <svg version="1.1" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" className="w-4 h-4 shrink-0">
                     <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"></path>
@@ -587,7 +365,7 @@ export default function ExploreTab({
                     <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"></path>
                     <path fill="none" d="M0 0h48v48H0z"></path>
                   </svg>
-                  <span className="text-xs">Connect Google Drive Cabin</span>
+                  <span className="text-xs">{syncStatus === 'syncing' ? 'Syncing...' : 'Connect Google Drive Cabin'}</span>
                 </button>
               </div>
             ) : (
@@ -607,7 +385,7 @@ export default function ExploreTab({
                     </div>
                   </div>
                   <button
-                    onClick={handleSignOut}
+                    onClick={onSignOut}
                     className="text-[10px] text-red-500 hover:underline flex items-center gap-1 font-semibold pl-2 shrink-0 cursor-pointer"
                     title="Disconnect Google Account"
                   >
@@ -625,7 +403,7 @@ export default function ExploreTab({
                     type="text"
                     placeholder="e.g. https://drive.google.com/drive/folders/... (Optional)"
                     value={folderUrl}
-                    onChange={(e) => setFolderUrl(e.target.value)}
+                    onChange={(e) => onUpdateFolderUrl(e.target.value)}
                     className="w-full text-xs bg-[var(--surface)] border border-[var(--border-strong)] rounded-xl px-3 py-2 text-[var(--text)] placeholder-[var(--muted-dark)] focus:outline-none focus:border-[var(--accent)] transition-colors"
                   />
                   <p className="text-[9px] text-[var(--muted)] leading-tight">
@@ -633,240 +411,59 @@ export default function ExploreTab({
                   </p>
                 </div>
 
+                {/* Auto-sync Toggle */}
+                <label className="flex items-start gap-2.5 bg-[var(--surface-hover)] p-2.5 border border-[var(--border)] rounded-xl cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={autoUpload}
+                    onChange={(e) => onToggleAutoUpload(e.target.checked)}
+                    className="mt-0.5 rounded accent-[var(--accent)] cursor-pointer"
+                  />
+                  <div className="leading-tight">
+                    <span className="text-xs font-semibold text-[var(--text)] block">Enable Real-time Auto-Upload</span>
+                    <span className="text-[9px] text-[var(--muted)]">Syncs your actions, study hours, habits, and budgets automatically.</span>
+                  </div>
+                </label>
+
                 <div className="grid grid-cols-2 gap-3 pt-1">
                   <button
-                    onClick={handleBackup}
-                    disabled={isBackingUp || isRestoring}
+                    onClick={onBackup}
+                    disabled={syncStatus === 'syncing'}
                     className="flex items-center justify-center gap-2 py-2 px-3 bg-[var(--accent)] hover:opacity-90 disabled:opacity-50 text-white rounded-xl text-xs font-semibold transition-all shadow-xs cursor-pointer select-none"
                   >
-                    {isBackingUp ? (
+                    {syncStatus === 'syncing' ? (
                       <RefreshCw className="w-3.5 h-3.5 animate-spin" />
                     ) : (
                       <UploadCloud className="w-3.5 h-3.5" />
                     )}
-                    <span>{isBackingUp ? "Saving..." : "Backup Data"}</span>
+                    <span>{syncStatus === 'syncing' ? "Syncing..." : "Force Backup"}</span>
                   </button>
 
                   <button
-                    onClick={handleRestore}
-                    disabled={isBackingUp || isRestoring}
+                    onClick={onRestore}
+                    disabled={syncStatus === 'syncing'}
                     className="flex items-center justify-center gap-2 py-2 px-3 bg-[var(--surface)] hover:bg-[var(--surface-hover)] border border-[var(--border-strong)] disabled:opacity-50 text-[var(--text)] rounded-xl text-xs font-semibold transition-all shadow-xs cursor-pointer select-none"
                   >
-                    {isRestoring ? (
+                    {syncStatus === 'syncing' ? (
                       <RefreshCw className="w-3.5 h-3.5 animate-spin" />
                     ) : (
                       <DownloadCloud className="w-3.5 h-3.5" />
                     )}
-                    <span>{isRestoring ? "Restore Data" : "Restore Data"}</span>
+                    <span>{syncStatus === 'syncing' ? "Syncing..." : "Force Restore"}</span>
                   </button>
                 </div>
               </div>
             )}
 
-            {backupSuccess && (
+            {syncStatus === 'connected' && (
               <div className="p-3 bg-emerald-500/10 border border-emerald-500/20 text-emerald-600 dark:text-emerald-400 rounded-xl text-[10px] leading-relaxed">
-                🎉 {backupSuccess}
+                🎉 Connected to Google Drive! Your university tracker state is safe.
               </div>
             )}
 
-            {errorMsg && (
+            {syncStatus === 'error' && syncError && (
               <div className="p-3 bg-red-500/10 border border-red-500/20 text-red-600 dark:text-red-400 rounded-xl text-[10px] leading-relaxed">
-                ⚠️ <strong>Backup Cabin Error:</strong> {errorMsg}
-              </div>
-            )}
-          </div>
-
-          {/* Supabase Real-time Sync Cabin */}
-          <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5 space-y-4 shadow-xs">
-            <div className="flex items-center justify-between border-b border-[var(--border)] pb-2">
-              <h3 className="serif text-base font-semibold text-[var(--text)] flex items-center gap-2">
-                <CloudLightning className="w-4.5 h-4.5 text-emerald-500" />
-                <span>Supabase Real-time Sync Cabin</span>
-              </h3>
-              <span className={`text-[9px] font-bold uppercase px-2.5 py-0.5 rounded-full ${
-                supabase ? 'bg-emerald-500/10 text-emerald-500' : 'bg-amber-500/10 text-amber-500'
-              }`}>
-                {supabase ? '⚡ Connected' : '🔑 Setup Needed'}
-              </span>
-            </div>
-
-            {!supabase ? (
-              <div className="space-y-3">
-                <p className="text-xs text-[var(--muted-dark)] leading-relaxed">
-                  Connect your personal <strong>Supabase</strong> database to synchronize your complete university life tracker in real-time across multiple tabs, phones, or devices!
-                </p>
-
-                <div className="bg-[var(--surface-hover)] border border-[var(--border)] rounded-xl p-3.5 space-y-2.5">
-                  <h4 className="text-[11px] font-bold text-[var(--text)] uppercase tracking-wider flex items-center gap-1.5">
-                    <Info className="w-3.5 h-3.5 text-amber-500" />
-                    <span>How to configure Supabase sync:</span>
-                  </h4>
-                  <ol className="text-[10px] text-[var(--muted)] space-y-2 list-decimal pl-5 leading-relaxed">
-                    <li>
-                      Go to your <strong>AI Studio App Settings</strong> (Secrets/Configuration panel).
-                    </li>
-                    <li>
-                      Add two environment variables:
-                      <div className="font-mono text-[9px] bg-[var(--surface)] border border-[var(--border)] rounded-lg p-1.5 my-1 text-[var(--text)] overflow-x-auto select-all">
-                        VITE_SUPABASE_URL = "your-supabase-url"<br/>
-                        VITE_SUPABASE_ANON_KEY = "your-anon-key"
-                      </div>
-                    </li>
-                    <li>
-                      Run this query inside your Supabase <strong>SQL Editor</strong> to create the sync table:
-                      <pre className="font-mono text-[9px] bg-[var(--surface)] border border-[var(--border)] rounded-lg p-2 mt-1 text-[var(--text)] overflow-x-auto select-all">
-{`CREATE TABLE tracker_sync (
-  sync_code text PRIMARY KEY,
-  state jsonb NOT NULL,
-  updated_at timestamp with time zone NOT NULL
-);
-
--- Enable RLS and make public for device-to-device sync
-ALTER TABLE tracker_sync ENABLE ROW LEVEL SECURITY;
-CREATE POLICY "Allow public access" ON tracker_sync FOR ALL USING (true) WITH CHECK (true);
-
--- Enable Realtime broadcast for device synchronization
-ALTER PUBLICATION supabase_realtime ADD TABLE tracker_sync;`}
-                      </pre>
-                    </li>
-                  </ol>
-                </div>
-              </div>
-            ) : (
-              <div className="space-y-4">
-                <p className="text-xs text-[var(--muted-dark)] leading-relaxed">
-                  Real-time device synchronization is active. Changes made on any device using the same sync code will instantly synchronize.
-                </p>
-
-                {supabaseSyncCode ? (
-                  <div className="space-y-3.5">
-                    {/* Active Sync Code Card */}
-                    <div className="bg-[var(--surface-hover)] border border-emerald-500/20 rounded-xl p-3.5 space-y-2 text-center">
-                      <span className="text-[9px] font-bold text-emerald-500 uppercase tracking-widest block">ACTIVE DEVICE SYNC CODE</span>
-                      <div className="flex items-center justify-center gap-2">
-                        <span className="font-mono text-base font-bold text-[var(--text)] select-all tracking-wider">
-                          {supabaseSyncCode}
-                        </span>
-                        <button
-                          onClick={() => {
-                            navigator.clipboard.writeText(supabaseSyncCode);
-                            alert('Sync code copied to clipboard! Share it with your other devices.');
-                          }}
-                          className="p-1 hover:bg-[var(--surface)] border border-[var(--border)] rounded-md text-[10px] font-bold text-[var(--muted)] hover:text-[var(--text)] transition-all cursor-pointer"
-                          title="Copy Sync Code"
-                        >
-                          Copy
-                        </button>
-                      </div>
-                      <p className="text-[10px] text-[var(--muted)]">
-                        Enter this code on your other devices to sync in real-time.
-                      </p>
-                    </div>
-
-                    {/* Auto-upload Toggle */}
-                    <label className="flex items-start gap-2.5 bg-[var(--surface-hover)] p-2.5 border border-[var(--border)] rounded-xl cursor-pointer select-none">
-                      <input
-                        type="checkbox"
-                        checked={autoUpload}
-                        onChange={(e) => handleToggleAutoUpload(e.target.checked)}
-                        className="mt-0.5 rounded accent-[var(--accent)] cursor-pointer"
-                      />
-                      <div className="leading-tight">
-                        <span className="text-xs font-semibold text-[var(--text)] block">Enable Real-time Auto-Upload</span>
-                        <span className="text-[9px] text-[var(--muted)]">Syncs your actions, study hours, habits, and budgets automatically.</span>
-                      </div>
-                    </label>
-
-                    {/* Actions Grid */}
-                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-                      <button
-                        onClick={handleForcePush}
-                        disabled={isSupabaseLoading}
-                        className="flex flex-col items-center justify-center gap-1.5 p-2 bg-[var(--surface)] hover:bg-[var(--surface-hover)] border border-[var(--border-strong)] disabled:opacity-50 text-[var(--text)] rounded-xl text-center cursor-pointer transition-all"
-                        title="Upload current local state to cloud immediately"
-                      >
-                        <UploadCloud className="w-4 h-4 text-[var(--accent)]" />
-                        <span className="text-[9px] font-bold uppercase">Force Push</span>
-                      </button>
-
-                      <button
-                        onClick={handleForcePull}
-                        disabled={isSupabaseLoading}
-                        className="flex flex-col items-center justify-center gap-1.5 p-2 bg-[var(--surface)] hover:bg-[var(--surface-hover)] border border-[var(--border-strong)] disabled:opacity-50 text-[var(--text)] rounded-xl text-center cursor-pointer transition-all"
-                        title="Fetch latest cloud state"
-                      >
-                        <DownloadCloud className="w-4 h-4 text-emerald-500" />
-                        <span className="text-[9px] font-bold uppercase">Force Pull</span>
-                      </button>
-
-                      <button
-                        onClick={handleDisconnectSync}
-                        disabled={isSupabaseLoading}
-                        className="flex flex-col items-center justify-center gap-1.5 p-2 bg-[var(--surface)] hover:bg-[var(--surface-hover)] border border-[var(--border-strong)] disabled:opacity-50 text-[var(--text)] rounded-xl text-center cursor-pointer transition-all text-red-500 hover:border-red-500/30"
-                        title="Disconnect device from live cloud session"
-                      >
-                        <LogOut className="w-4 h-4" />
-                        <span className="text-[9px] font-bold uppercase">Disconnect</span>
-                      </button>
-                    </div>
-                  </div>
-                ) : (
-                  <div className="space-y-4">
-                    {/* Setup Actions */}
-                    <div className="bg-[var(--surface-hover)] border border-[var(--border)] rounded-xl p-4 text-center space-y-3">
-                      <p className="text-xs text-[var(--muted)]">
-                        No active sync code is set up. You can generate a new one, or enter a code from an existing device.
-                      </p>
-                      <button
-                        onClick={handleGenerateCode}
-                        disabled={isSupabaseLoading}
-                        className="w-full flex items-center justify-center gap-2 bg-[var(--accent)] hover:opacity-90 disabled:opacity-50 text-white rounded-xl py-2 px-4 text-xs font-bold shadow-xs cursor-pointer select-none"
-                      >
-                        {isSupabaseLoading ? (
-                          <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                        ) : (
-                          <Sparkles className="w-3.5 h-3.5" />
-                        )}
-                        <span>Generate New Sync Code</span>
-                      </button>
-                    </div>
-
-                    <div className="flex items-center gap-2 text-[10px] text-[var(--muted-dark)] uppercase font-bold tracking-wider justify-center">
-                      <div className="h-[1px] bg-[var(--border)] flex-1"></div>
-                      <span>OR CONNECT TO ANOTHER DEVICE</span>
-                      <div className="h-[1px] bg-[var(--border)] flex-1"></div>
-                    </div>
-
-                    <div className="flex gap-2">
-                      <input
-                        type="text"
-                        placeholder="e.g. SYNC-ABCD-EFGH"
-                        value={syncCodeInput}
-                        onChange={(e) => setSyncCodeInput(e.target.value)}
-                        className="flex-1 text-xs bg-[var(--surface)] border border-[var(--border-strong)] rounded-xl px-3 py-2 text-[var(--text)] placeholder-[var(--muted-dark)] uppercase tracking-wider focus:outline-none focus:border-[var(--accent)] transition-colors"
-                      />
-                      <button
-                        onClick={handleConnectCode}
-                        disabled={isSupabaseLoading}
-                        className="bg-[var(--surface)] hover:bg-[var(--surface-hover)] border border-[var(--border-strong)] disabled:opacity-50 text-[var(--text)] text-xs font-bold rounded-xl px-4 py-2 cursor-pointer transition-all"
-                      >
-                        {isSupabaseLoading ? 'Connecting...' : 'Connect'}
-                      </button>
-                    </div>
-                  </div>
-                )}
-              </div>
-            )}
-
-            {supabaseSuccess && (
-              <div className="p-3 bg-emerald-500/10 border border-emerald-500/20 text-emerald-600 dark:text-emerald-400 rounded-xl text-[10px] leading-relaxed">
-                🎉 {supabaseSuccess}
-              </div>
-            )}
-
-            {supabaseError && (
-              <div className="p-3 bg-red-500/10 border border-red-500/20 text-red-600 dark:text-red-400 rounded-xl text-[10px] leading-relaxed">
-                ⚠️ <strong>Sync Cabin Error:</strong> {supabaseError}
+                ⚠️ <strong>Backup Cabin Error:</strong> {syncError}
               </div>
             )}
           </div>

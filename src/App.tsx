@@ -39,7 +39,8 @@ import HealthTab from './components/HealthTab';
 import FinanceTab from './components/FinanceTab';
 import CalendarTab from './components/CalendarTab';
 import ExploreTab from './components/ExploreTab';
-import { getSupabase, subscribeToSyncChanges, uploadStateToSupabase, downloadStateFromSupabase } from './lib/supabase';
+import { initAuth, googleSignIn, logout, saveBackupToDrive, downloadBackupFromDrive, extractFolderId } from './lib/drive';
+import { User as FirebaseUser } from 'firebase/auth';
 
 export default function App() {
   // State Initialization
@@ -57,101 +58,77 @@ export default function App() {
     return INITIAL_STATE;
   });
 
-  // Supabase Real-time Sync state
-  const [supabaseSyncCode, setSupabaseSyncCode] = useState<string | null>(() => {
-    return localStorage.getItem('eternity_supabase_sync_code');
-  });
-
-  // Track current real-time sync connectivity state
-  const [syncStatus, setSyncStatus] = useState<'idle' | 'syncing' | 'connected' | 'error' | 'disconnected'>(() => {
-    return localStorage.getItem('eternity_supabase_sync_code') ? 'syncing' : 'disconnected';
-  });
+  // Google Drive Cloud Sync state
+  const [googleUser, setGoogleUser] = useState<FirebaseUser | null>(null);
+  const [googleToken, setGoogleToken] = useState<string | null>(null);
+  const [syncStatus, setSyncStatus] = useState<'idle' | 'syncing' | 'connected' | 'error' | 'disconnected'>('disconnected');
   const [syncError, setSyncError] = useState<string | null>(null);
+  const [autoUpload, setAutoUpload] = useState<boolean>(() => {
+    return localStorage.getItem('eternity_gdrive_auto_sync') !== 'false';
+  });
+  const [folderUrl, setFolderUrl] = useState<string>(() => {
+    return localStorage.getItem('eternity_gdrive_folder_url') || '';
+  });
 
   // Track the last state JSON string we have pushed or pulled to avoid infinite loops
   const lastSyncedStateRef = useRef<string>('');
 
-  // Fetch initial state once when sync code is loaded or configured
+  // Initialize Google Drive Auth & Initial Pull
   useEffect(() => {
-    const supabase = getSupabase();
-    if (!supabase || !supabaseSyncCode) {
-      setSyncStatus('disconnected');
-      return;
-    }
+    const unsubscribe = initAuth(
+      async (user, token) => {
+        setGoogleUser(user);
+        setGoogleToken(token);
+        
+        // Let's do an initial load from Google Drive!
+        setSyncStatus('syncing');
+        try {
+          const folderId = extractFolderId(localStorage.getItem('eternity_gdrive_folder_url') || '');
+          const remoteState = await downloadBackupFromDrive(token, folderId).catch((err) => {
+            if (err.message?.includes('not found') || err.message?.includes('No backup file')) {
+              return null;
+            }
+            throw err;
+          });
 
-    async function loadInitialSync() {
-      setSyncStatus('syncing');
-      try {
-        const remoteState = await downloadStateFromSupabase(supabase, supabaseSyncCode);
-        if (remoteState) {
-          const remoteStr = JSON.stringify(remoteState);
-          lastSyncedStateRef.current = remoteStr;
-          setState(remoteState);
-          setSyncStatus('connected');
-          setSyncError(null);
-        } else {
-          // If there is no remote state yet, we can push our local state to initialize it!
-          await uploadStateToSupabase(supabase, supabaseSyncCode, state);
-          lastSyncedStateRef.current = JSON.stringify(state);
-          setSyncStatus('connected');
-          setSyncError(null);
-        }
-      } catch (err: any) {
-        console.error('Failed to pull initial Supabase state:', err);
-        setSyncStatus('error');
-        setSyncError(err.message || 'Failed to download initial state.');
-      }
-    }
-
-    loadInitialSync();
-  }, [supabaseSyncCode]);
-
-  // Listen for external real-time updates from other devices via Supabase
-  useEffect(() => {
-    const supabase = getSupabase();
-    if (!supabase || !supabaseSyncCode) {
-      setSyncStatus('disconnected');
-      return;
-    }
-
-    const subscription = subscribeToSyncChanges(
-      supabase, 
-      supabaseSyncCode, 
-      (remoteState) => {
-        if (remoteState) {
-          const remoteStr = JSON.stringify(remoteState);
-          if (lastSyncedStateRef.current !== remoteStr) {
+          if (remoteState) {
+            const remoteStr = JSON.stringify(remoteState);
             lastSyncedStateRef.current = remoteStr;
             setState(remoteState);
             setSyncStatus('connected');
             setSyncError(null);
+            triggerToast("🎒 Loaded latest data from Google Drive!");
+          } else {
+            // Initialize backup on Drive with the current local state
+            await saveBackupToDrive(token, folderId, state);
+            lastSyncedStateRef.current = JSON.stringify(state);
+            setSyncStatus('connected');
+            setSyncError(null);
+            triggerToast("☁️ Created initial Google Drive backup!");
           }
+        } catch (err: any) {
+          console.error('Failed to initialize Google Drive sync:', err);
+          setSyncStatus('error');
+          setSyncError(err.message || 'Failed to sync with Google Drive.');
         }
       },
-      (status, err) => {
-        if (status === 'SUBSCRIBED') {
-          setSyncStatus('connected');
-          setSyncError(null);
-        } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
-          setSyncStatus('error');
-          setSyncError(err?.message || `Realtime subscription status: ${status}`);
-        } else if (status === 'CLOSED') {
-          setSyncStatus('disconnected');
-        }
+      () => {
+        setGoogleUser(null);
+        setGoogleToken(null);
+        setSyncStatus('disconnected');
       }
     );
 
     return () => {
-      supabase.removeChannel(subscription);
+      if (typeof unsubscribe === 'function') {
+        unsubscribe();
+      }
     };
-  }, [supabaseSyncCode]);
+  }, []);
 
-  // Debounced Auto-upload to Supabase on local state change
+  // Debounced Auto-upload to Google Drive on local state change
   useEffect(() => {
-    const supabase = getSupabase();
-    if (!supabase || !supabaseSyncCode) return;
-
-    const autoUpload = localStorage.getItem('eternity_supabase_auto_upload') !== 'false';
+    if (!googleToken) return;
     if (!autoUpload) return;
 
     const stateStr = JSON.stringify(state);
@@ -162,19 +139,129 @@ export default function App() {
 
     const timer = setTimeout(async () => {
       try {
-        await uploadStateToSupabase(supabase, supabaseSyncCode, state);
+        const folderId = extractFolderId(folderUrl);
+        await saveBackupToDrive(googleToken, folderId, state);
         lastSyncedStateRef.current = stateStr;
         setSyncStatus('connected');
         setSyncError(null);
       } catch (err: any) {
-        console.error('Auto-sync to Supabase failed:', err);
+        console.error('Auto-sync to Google Drive failed:', err);
         setSyncStatus('error');
         setSyncError(err.message || 'Auto-upload failed');
       }
-    }, 2500); // 2.5 seconds debounce to prevent high rate usage
+    }, 3000); // 3 seconds debounce to prevent high rate usage and avoid rate limiting
 
     return () => clearTimeout(timer);
-  }, [state, supabaseSyncCode]);
+  }, [state, googleToken, autoUpload, folderUrl]);
+
+  const handleGoogleSignIn = async () => {
+    setSyncError(null);
+    setSyncStatus('syncing');
+    try {
+      const res = await googleSignIn();
+      if (res) {
+        setGoogleUser(res.user);
+        setGoogleToken(res.accessToken);
+        setSyncStatus('connected');
+        
+        // Pull latest state on connection
+        const folderId = extractFolderId(folderUrl);
+        const remoteState = await downloadBackupFromDrive(res.accessToken, folderId).catch((err) => {
+          if (err.message?.includes('not found') || err.message?.includes('No backup file')) {
+            return null;
+          }
+          throw err;
+        });
+
+        if (remoteState) {
+          const remoteStr = JSON.stringify(remoteState);
+          lastSyncedStateRef.current = remoteStr;
+          setState(remoteState);
+          triggerToast("🎒 Connected & Loaded latest data from Drive!");
+        } else {
+          // Initialize backup on Drive
+          await saveBackupToDrive(res.accessToken, folderId, state);
+          lastSyncedStateRef.current = JSON.stringify(state);
+          triggerToast("☁️ Connected & Initialized backup on Drive!");
+        }
+      }
+    } catch (err: any) {
+      console.error(err);
+      setSyncStatus('error');
+      setSyncError(err.message || 'Authentication with Google failed.');
+      triggerToast("❌ Google Drive connection failed");
+    }
+  };
+
+  const handleSignOut = async () => {
+    setSyncError(null);
+    try {
+      await logout();
+      setGoogleUser(null);
+      setGoogleToken(null);
+      setSyncStatus('disconnected');
+      triggerToast("🚪 Disconnected from Google Drive");
+    } catch (err: any) {
+      console.error(err);
+      setSyncError(err.message || 'Logout failed.');
+    }
+  };
+
+  const handleForcePush = async () => {
+    if (!googleToken) return;
+    setSyncStatus('syncing');
+    setSyncError(null);
+    try {
+      const folderId = extractFolderId(folderUrl);
+      await saveBackupToDrive(googleToken, folderId, state);
+      lastSyncedStateRef.current = JSON.stringify(state);
+      setSyncStatus('connected');
+      triggerToast("⬆️ Data successfully pushed to Google Drive!");
+    } catch (err: any) {
+      console.error(err);
+      setSyncStatus('error');
+      setSyncError(err.message || 'Failed to push data to Google Drive.');
+      triggerToast("❌ Failed to push data");
+    }
+  };
+
+  const handleForcePull = async () => {
+    if (!googleToken) return;
+    const confirmPull = window.confirm(
+      "Are you sure you want to pull data from Google Drive? This will completely overwrite your current local sessions and planner."
+    );
+    if (!confirmPull) return;
+
+    setSyncStatus('syncing');
+    setSyncError(null);
+    try {
+      const folderId = extractFolderId(folderUrl);
+      const remoteState = await downloadBackupFromDrive(googleToken, folderId);
+      if (remoteState) {
+        setState(remoteState);
+        lastSyncedStateRef.current = JSON.stringify(remoteState);
+        setSyncStatus('connected');
+        triggerToast("⬇️ Data successfully pulled from Google Drive!");
+      } else {
+        throw new Error("No data found inside backup file.");
+      }
+    } catch (err: any) {
+      console.error(err);
+      setSyncStatus('error');
+      setSyncError(err.message || 'Failed to pull data from Google Drive.');
+      triggerToast("❌ Failed to pull data");
+    }
+  };
+
+  const handleToggleAutoUpload = (checked: boolean) => {
+    setAutoUpload(checked);
+    localStorage.setItem('eternity_gdrive_auto_sync', checked ? 'true' : 'false');
+  };
+
+  const handleUpdateFolderUrl = (url: string) => {
+    setFolderUrl(url);
+    localStorage.setItem('eternity_gdrive_folder_url', url);
+  };
 
 
   const [quoteIndex, setQuoteIndex] = useState(() => {
@@ -1145,15 +1232,18 @@ export default function App() {
               setState(newState);
               triggerToast("🎒 University life tracker state loaded and synced!");
             }}
-            supabaseSyncCode={supabaseSyncCode}
-            onUpdateSyncCode={(code) => {
-              if (code) {
-                localStorage.setItem('eternity_supabase_sync_code', code);
-              } else {
-                localStorage.removeItem('eternity_supabase_sync_code');
-              }
-              setSupabaseSyncCode(code);
-            }}
+            googleUser={googleUser}
+            googleToken={googleToken}
+            syncStatus={syncStatus}
+            syncError={syncError}
+            autoUpload={autoUpload}
+            folderUrl={folderUrl}
+            onGoogleSignIn={handleGoogleSignIn}
+            onSignOut={handleSignOut}
+            onBackup={handleForcePush}
+            onRestore={handleForcePull}
+            onToggleAutoUpload={handleToggleAutoUpload}
+            onUpdateFolderUrl={handleUpdateFolderUrl}
           />
         );
       case "personal":
@@ -1337,7 +1427,7 @@ export default function App() {
         todoCount={state.todos.filter(t => !t.done).length}
         syncStatus={syncStatus}
         syncError={syncError}
-        supabaseSyncCode={supabaseSyncCode}
+        syncUserEmail={googleUser?.email || null}
       />
 
       {/* Main Workspace Feed content */}
